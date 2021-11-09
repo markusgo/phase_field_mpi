@@ -56,6 +56,10 @@ contains
 		allocate(phi(lx,ly,0:zstride+1))
 		allocate(phinew(lx,ly,0:zstride+1))
 		allocate(dfdphi(lx,ly,0:zstride+1))
+		if(ismaster) then
+			allocate(phi_global(lx,ly,lz))
+		endif
+
 		do k=1,zstride
 			do j=1,ly
 				do i=1,lx
@@ -68,7 +72,6 @@ contains
 			enddo
 		enddo
 		call ghostswap(phi)
-		if(ismaster) allocate(phi_global(lx,ly,lz))
 	end subroutine
 
 	subroutine mpi_gather_grid(matloc,matglobal)
