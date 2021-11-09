@@ -7,6 +7,8 @@ module parallel_pf
 	real(8) :: radsph,rho_phi,epsilonsqr,mob
 	integer :: prank,psize,zstride
 	integer,parameter :: master = 0
+	logical :: ismaster
+
 
 contains
 	subroutine mpi_start(error)
@@ -18,6 +20,7 @@ contains
 		integer,intent(out) :: error
 		call MPI_COMM_SIZE(MPI_COMM_WORLD,psize,error)
 		call MPI_COMM_RANK(MPI_COMM_WORLD,prank,error)
+		ismaster = prank==master
 		call MPI_BARRIER(MPI_COMM_WORLD,error)
 	end subroutine
 
@@ -65,7 +68,7 @@ contains
 			enddo
 		enddo
 		call ghostswap(phi)
-		if(prank==master) allocate(phi_global(lx,ly,lz))
+		if(ismaster) allocate(phi_global(lx,ly,lz))
 	end subroutine
 
 	subroutine mpi_gather_grid(matloc,matglobal)
@@ -101,7 +104,6 @@ contains
 		do k = 1,zstride
 			do j = 1,ly
 				do i = 1,lx
-					!z = zi+k
 					inext = modulo(i,lx) + 1
 					iprev = modulo(i-2,lx) + 1
 					jnext = modulo(j,ly) + 1
@@ -121,7 +123,6 @@ contains
 		do k = 1,zstride
 			do j = 1,ly
 				do i = 1,lx
-					!z = zi+k
 					inext = modulo(i,lx) + 1
 					iprev = modulo(i-2,lx) + 1
 					jnext = modulo(j,ly) + 1
