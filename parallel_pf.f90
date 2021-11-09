@@ -3,8 +3,8 @@ module parallel_pf
 	include "mpif.h"
 
 	integer :: lx,ly,lz
-	real(8),allocatable,dimension(:,:,:) :: phi,dfdphi,phi_global
-	real(8) :: radsph
+	real(8),allocatable,dimension(:,:,:) :: phi,phinew,dfdphi,phi_global
+	real(8) :: radsph,rho_phi,epsilonsqr,mob
 	integer :: prank,psize,zstride
 	integer,parameter :: master = 0
 
@@ -19,7 +19,6 @@ contains
 		call MPI_COMM_SIZE(MPI_COMM_WORLD,psize,error)
 		call MPI_COMM_RANK(MPI_COMM_WORLD,prank,error)
 		call MPI_BARRIER(MPI_COMM_WORLD,error)
-		print*,"proc ",prank," of ",psize
 	end subroutine
 
 	subroutine mpi_end(error)
@@ -35,6 +34,9 @@ contains
 		ly = ydim
 		lz = zdim
 		radsph = rsphere
+		rho_phi = 1.0d0
+		epsilonsqr = 1.0d0
+		mob = 1.0d0
 		call MPI_BARRIER(MPI_COMM_WORLD,error)
 	end subroutine
 
@@ -48,35 +50,32 @@ contains
 		zstride = lz/psize
 		chunki = prank*zstride+1
 		chunkf = chunki+zstride
-		
-
 		allocate(phi(lx,ly,0:zstride+1))
+		allocate(phinew(lx,ly,0:zstride+1))
 		allocate(dfdphi(lx,ly,0:zstride+1))
-		!do k=1,chunksize
-		!	do j=1,ly
-		!		do i=1,lx
-		!			z = chunki+k
-		!			dx = i-lx/2.0
-		!			dy = j-ly/2.0
-		!			dz = z-lz/2.0
-		!			phi(i,j,k) = merge(1,-1,dx**2+dy**2+dz**2<radsph**2)
-		!		enddo
-		!	enddo
-		!enddo
-		phi = prank
-		
-		if(prank==master) then
-			allocate(phi_global(lx,ly,lz))
-			do i=1,psize
-				strides(i) = (i-1)*lx*ly*zstride
-				rcount(i) = lx*ly*zstride
+		do k=1,zstride
+			do j=1,ly
+				do i=1,lx
+					z = chunki+k
+					dx = i-lx/2.0d0
+					dy = j-ly/2.0d0
+					dz = z-lz/2.0d0
+					phi(i,j,k) = merge(1.0d0,-1.0d0,dx**2+dy**2+dz**2<radsph**2)
+				enddo
 			enddo
-		endif
-		call MPI_BARRIER(MPI_COMM_WORLD,error)
-		
-		call MPI_GATHERV(phi(:,:,1:zstride),lx*ly*zstride,MPI_REAL8, &
-						 phi_global,rcount,strides,MPI_REAL8, &
-						 master,MPI_COMM_WORLD,error)
+		enddo
+		call ghostswap(phi)
+		if(prank==master) allocate(phi_global(lx,ly,lz))
+	end subroutine
+
+	subroutine mpi_gather_grid(matloc,matglobal)
+		real(8),intent(in) :: matloc(lx,ly,0:zstride+1) 
+		real(8),intent(inout) :: matglobal(lx,ly,lz)
+		integer :: error
+
+		call MPI_GATHER(matloc(:,:,1:zstride),lx*ly*zstride,MPI_REAL8, &
+						matglobal,lx*ly*zstride,MPI_REAL8, &
+						master,MPI_COMM_WORLD,error)
 	end subroutine
 
 	subroutine ghostswap(data_swap)
@@ -95,41 +94,50 @@ contains
 	end subroutine
 
 	subroutine euler_step_no_mech(dt)
-		real(dp),intent(in) :: dt
-		integer :: i,j,k,z
-		real(dp) :: lapphi,lapdfdphi
-
-		do k = 1,lz
+		real(8),intent(in) :: dt
+		integer :: i,j,k,z,inext,jnext,knext,iprev,jprev,kprev,zi
+		real(8) :: lapphi,lapdfdphi
+		zi = prank*zstride+1
+		do k = 1,zstride
 			do j = 1,ly
 				do i = 1,lx
-					z = 
-					lapphi = phi(inext,j,k) + phi(iprev,j,k) &
-						   + phi(i,jnext,k) + phi(i,jprev,k) &
-						   + phi(i,j,knext) + phi(i,j,kprev) &
-						   - sixdp * phi(i,j,k)
-					dfdphi(i,j,k) = rho_phi * ( -phi(i,j,k) + phi(i,j,k)**3 - epsilon**2*lapphi)
-				enddo
-			enddo
-		enddo
-
-		do k = 1,lz
-			do j = 1,ly
-				do i = 1,lx
+					!z = zi+k
 					inext = modulo(i,lx) + 1
 					iprev = modulo(i-2,lx) + 1
 					jnext = modulo(j,ly) + 1
 					jprev = modulo(j-2,ly) + 1
-					knext = modulo(k,lz) + 1
-					kprev = modulo(k-2,lz) + 1
+					knext = k+1
+					kprev = k-1
+					lapphi = phi(inext,j,k) + phi(iprev,j,k) &
+						   + phi(i,jnext,k) + phi(i,jprev,k) &
+						   + phi(i,j,knext) + phi(i,j,kprev) &
+						   - 6.0d0 * phi(i,j,k)
+					dfdphi(i,j,k) = rho_phi * ( -phi(i,j,k) + phi(i,j,k)**3 - epsilonsqr*lapphi)
+				enddo
+			enddo
+		enddo
+		call ghostswap(dfdphi)
+
+		do k = 1,zstride
+			do j = 1,ly
+				do i = 1,lx
+					!z = zi+k
+					inext = modulo(i,lx) + 1
+					iprev = modulo(i-2,lx) + 1
+					jnext = modulo(j,ly) + 1
+					jprev = modulo(j-2,ly) + 1
+					knext = k+1
+					kprev = k-1
 					lapdfdphi = dfdphi(inext,j,k) + dfdphi(iprev,j,k) &
 						      + dfdphi(i,jnext,k) + dfdphi(i,jprev,k) &
 						      + dfdphi(i,j,knext) + dfdphi(i,j,kprev) &
-						      - sixdp * dfdphi(i,j,k)
+						      - 6.0d0 * dfdphi(i,j,k)
 					phinew(i,j,k) = phi(i,j,k) + dt * mob * lapdfdphi
 				enddo
 			enddo
 		enddo
 		phi = phinew
+		call ghostswap(phi)
 	end subroutine
 
 	subroutine save_vtk_scalar(mat,name,dataset)
